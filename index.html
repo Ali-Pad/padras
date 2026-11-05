@@ -94,8 +94,11 @@ function openGame(n){const home=document.getElementById('home'),board=document.g
 // پیکربندی حساب کاربری پادراس: این دو مقدار را از تنظیمات پروژه پایگاه‌داده وارد کن.
 const PADRAS_DB_URL='https://odraoyuufxlypqnrsafz.supabase.co';
 const PADRAS_DB_PUBLIC_KEY='sb_publishable_NP4zmrAmZwj4LdUFMFdCGw_AwQPU5iO';
-let padrasAuth=null;
+let padrasAuth=null,authBusy=false;
 const authEl=id=>document.getElementById(id);
+function setAuthBusy(busy){authBusy=busy;['signupBtn','loginBtn'].forEach(id=>{const b=authEl(id);b.disabled=busy;b.style.opacity=busy?'.55':'1';b.textContent=busy?(id==='signupBtn'?'در حال ساخت...':'در حال ورود...'):(id==='signupBtn'?'ساخت حساب':'ورود');});}
+function friendlyAuthError(error){const m=String(error?.message||'');if(/rate limit|too many requests/i.test(m))return 'درخواست‌های زیادی فرستاده شده است. لطفاً ۶۰ ثانیه صبر کن و فقط یک بار دیگر تلاش کن.';if(/invalid login credentials/i.test(m))return 'ایمیل یا گذرواژه درست نیست.';if(/already registered|user already registered/i.test(m))return 'این ایمیل قبلاً حساب دارد؛ از گزینه ورود استفاده کن.';if(/network|fetch|timeout|aborted/i.test(m))return 'ارتباط اینترنت کند یا قطع شده است. چند لحظه بعد دوباره تلاش کن.';return 'خطا در ارتباط با حساب: '+m;}
+function authRequestTimeout(input,init={}){const controller=new AbortController();const timer=setTimeout(()=>controller.abort(),15000);return fetch(input,{...init,signal:controller.signal}).finally(()=>clearTimeout(timer));}
 function authReady(){return PADRAS_DB_URL.startsWith('https://') && PADRAS_DB_PUBLIC_KEY.length>30 && window.supabase;}
 function authMessage(t){authEl('authMessage').textContent=t;}
 async function saveOnlineProfile(user,name){if(!padrasAuth||!user)return;const display=(name||user.user_metadata?.display_name||'بازیکن').trim().slice(0,24);const {error}=await padrasAuth.from('profiles').select('id,display_name,coins').eq('id',user.id).maybeSingle();if(error)authMessage('حساب وارد شد، اما خواندن پروفایل انجام نشد: '+error.message);else if(display)localStorage.setItem('padras_player_name',display);}
@@ -111,33 +114,41 @@ async function refreshAuthUI(){
  authEl('accountBtn').textContent=session?'✅ حساب من':'🔐 ورود / ثبت‌نام';
 }
 if(authReady()){
- padrasAuth=window.supabase.createClient(PADRAS_DB_URL,PADRAS_DB_PUBLIC_KEY);
+ padrasAuth=window.supabase.createClient(PADRAS_DB_URL,PADRAS_DB_PUBLIC_KEY,{global:{fetch:authRequestTimeout}});
  padrasAuth.auth.onAuthStateChange(()=>refreshAuthUI());
 }
 authEl('accountBtn').addEventListener('click',showAuth);
 authEl('closeAuthBtn').addEventListener('click',hideAuth);
 authEl('signupBtn').addEventListener('click',async()=>{
- if(!padrasAuth){authMessage('ابتدا نشانی و کلید پایگاه‌داده را در کد وارد کن.');return;}
+ if(authBusy)return;
+ if(!padrasAuth){authMessage('ارتباط حساب هنوز آماده نیست. صفحه را تازه‌سازی کن.');return;}
  const name=authEl('authName').value.trim(),email=authEl('authEmail').value.trim(),password=authEl('authPassword').value;
  if(!name||!email||password.length<6){authMessage('نام، ایمیل و گذرواژه حداقل ۶ نویسه‌ای را کامل کن.');return;}
- authMessage('در حال ساخت حساب...');
- const {data,error}=await padrasAuth.auth.signUp({email,password,options:{data:{display_name:name}}});
- if(error){authMessage('خطا: '+error.message);return;}
- if(data.user){localStorage.setItem('padras_player_name',name);if(data.session)await saveOnlineProfile(data.user,name);}
- authMessage(data.session?'حساب ساخته شد و وارد شدی.':'حساب ساخته شد؛ اگر تأیید ایمیل روشن است، ایمیلت را بررسی کن.');
- await refreshAuthUI();
+ setAuthBusy(true);authMessage('در حال ساخت حساب؛ لطفاً صفحه را نبند...');
+ try{
+  const {data,error}=await padrasAuth.auth.signUp({email,password,options:{data:{display_name:name}}});
+  if(error){authMessage(friendlyAuthError(error));return;}
+  if(data.user){localStorage.setItem('padras_player_name',name);if(data.session)await saveOnlineProfile(data.user,name);}
+  authMessage(data.session?'حساب ساخته شد و وارد شدی.':'حساب ساخته شد. اگر پیام تأیید خواسته شد، صندوق ایمیلت را بررسی کن.');
+  await refreshAuthUI();
+ }catch(error){authMessage(friendlyAuthError(error));}
+ finally{setAuthBusy(false);}
 });
 authEl('loginBtn').addEventListener('click',async()=>{
- if(!padrasAuth){authMessage('ابتدا نشانی و کلید پایگاه‌داده را در کد وارد کن.');return;}
+ if(authBusy)return;
+ if(!padrasAuth){authMessage('ارتباط حساب هنوز آماده نیست. صفحه را تازه‌سازی کن.');return;}
  const email=authEl('authEmail').value.trim(),password=authEl('authPassword').value;
  if(!email||!password){authMessage('ایمیل و گذرواژه را وارد کن.');return;}
- authMessage('در حال ورود...');
- const {data,error}=await padrasAuth.auth.signInWithPassword({email,password});
- if(error){authMessage('خطا: '+error.message);return;}
- const name=data.user.user_metadata?.display_name;
- if(name)localStorage.setItem('padras_player_name',name);
- await saveOnlineProfile(data.user,name);
- authMessage('با موفقیت وارد حساب شدی!');await refreshAuthUI();
+ setAuthBusy(true);authMessage('در حال ورود؛ لطفاً چند لحظه صبر کن...');
+ try{
+  const {data,error}=await padrasAuth.auth.signInWithPassword({email,password});
+  if(error){authMessage(friendlyAuthError(error));return;}
+  const name=data.user.user_metadata?.display_name;
+  if(name)localStorage.setItem('padras_player_name',name);
+  await saveOnlineProfile(data.user,name);
+  authMessage('با موفقیت وارد حساب شدی!');await refreshAuthUI();
+ }catch(error){authMessage(friendlyAuthError(error));}
+ finally{setAuthBusy(false);}
 });
 authEl('logoutBtn').addEventListener('click',async()=>{if(padrasAuth){await padrasAuth.auth.signOut();authMessage('از حساب خارج شدی.');await refreshAuthUI();}});
 </script></body></html>
